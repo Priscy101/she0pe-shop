@@ -1,4 +1,10 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  "https://tmqdqcvppfovmcrubiar.supabase.co",
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtcWRxY3ZwcGZvdm1jcnViaWFyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NTEzMDMsImV4cCI6MjA5MzAyNzMwM30.rM9ikappoffrscgYd88_nu7xJyEy3y9GPaQC5tpUqRM"
+);
 
 /* ─── GOOGLE FONTS ─────────────────────────────────────────────────────── */
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500;1,600&family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Satisfy&display=swap');`;
@@ -352,10 +358,12 @@ const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov
 /* ─── APP ───────────────────────────────────────────────────────────────── */
 export default function She0pe() {
   const [page, setPage] = useState("home");
-  const [books, setBooks] = useState(INIT_BOOKS);
-  const [events, setEvents] = useState(INIT_EVENTS);
-  const [reviews, setReviews] = useState(INIT_REVIEWS);
-  const [accounts, setAccounts] = useState(INIT_ACCOUNTS);
+  const [books, setBooks] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [orders, setOrders] = useState([]);
   const [toast, setToast] = useState(null);
   const [orderModal, setOrderModal] = useState(null);
   const [detailModal, setDetailModal] = useState(null);
@@ -402,6 +410,39 @@ export default function She0pe() {
 
   const go = (p) => { setPage(p); window.scrollTo(0,0); };
 
+  /* ── SUPABASE HELPERS ── */
+  const mapBook = (b) => ({
+    id: b.id, title: b.title, author: b.author, genre: b.genre,
+    digitalPrice: b.digital_price, physicalPrice: b.physical_price,
+    coverColor: (() => { try { return JSON.parse(b.cover_color); } catch { return ["#2C4A3E","#1A2E26"]; } })(),
+    coverImg: b.cover_img, excerpt: b.excerpt, about: b.about, year: b.year, pages: b.pages,
+  });
+  const mapEvent = (e) => ({
+    id: e.id, day: e.day, month: e.month, title: e.title,
+    location: e.location, time: e.time, type: e.type, desc: e.description,
+  });
+  const mapReview = (r) => ({ id: r.id, name: r.name, book: r.book, stars: r.stars, text: r.text, date: r.date });
+  const mapAcct = (a) => ({ id: a.id, currency: a.currency, icon: a.icon, bank: a.bank, name: a.name, number: a.number, isDefault: a.is_default });
+
+  const loadAll = async () => {
+    setLoading(true);
+    const [b, e, r, a, o] = await Promise.all([
+      supabase.from("books").select("*").order("created_at"),
+      supabase.from("events").select("*").order("created_at"),
+      supabase.from("reviews").select("*").order("created_at", { ascending: false }),
+      supabase.from("accounts").select("*").order("created_at"),
+      supabase.from("orders").select("*").order("created_at", { ascending: false }),
+    ]);
+    if (b.data) setBooks(b.data.map(mapBook));
+    if (e.data) setEvents(e.data.map(mapEvent));
+    if (r.data) setReviews(r.data.map(mapReview));
+    if (a.data) setAccounts(a.data.map(mapAcct));
+    if (o.data) setOrders(o.data);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadAll(); }, []);
+
   /* ── ORDER ── */
   const openOrder = (book) => {
     setOrderModal(book); setOType("digital"); setOStep(1);
@@ -414,19 +455,49 @@ export default function She0pe() {
   const total = oType==="physical" ? bookPrice + delivFee : bookPrice;
   const defaultAcct = accounts.find(a=>a.isDefault) || accounts[0];
 
-  const placeOrder = () => {
+  const placeOrder = async () => {
     if (!oPay) return showToast("Please select a payment method.");
+    const selectedAcct = accounts.find(a => String(a.id) === oPay);
+    const paymentLabel = selectedAcct
+      ? `${selectedAcct.bank} (${selectedAcct.currency})`
+      : oPay === "card" ? "Debit Card"
+      : oPay === "paystack" ? "Paystack"
+      : oPay === "flutterwave" ? "Flutterwave" : oPay;
+
+    const { error } = await supabase.from("orders").insert({
+      book_title: orderModal.title,
+      book_author: orderModal.author,
+      order_type: oType,
+      customer_name: oForm.name,
+      customer_email: oForm.email,
+      customer_phone: oForm.phone || null,
+      delivery_address: oType === "physical" ? oForm.address : null,
+      delivery_city: oType === "physical" ? oForm.city : null,
+      delivery_state: oType === "physical" ? oForm.state : null,
+      delivery_country: oType === "physical" ? oForm.country : null,
+      delivery_fee: oType === "physical" ? delivFee : 0,
+      book_price: bookPrice,
+      total_price: total,
+      payment_method: paymentLabel,
+      order_reference: `${oForm.name?.split(" ")[0]||"ORDER"}-${oRef}`,
+      status: "pending",
+    });
+    if (error) { showToast("Order saved but had an issue logging it."); }
     setOSuccess(true);
     showToast("Order received! 🎉 Thank you.");
   };
 
   /* ── REVIEW ── */
-  const submitReview = () => {
+  const submitReview = async () => {
     if (!rvForm.name || !rvForm.book || !rvForm.text) return showToast("Please fill name, book and review.");
-    setReviews(p => [{id:Date.now(),name:rvForm.name,book:rvForm.book,stars:rvForm.stars,text:rvForm.text,
-      date:new Date().toLocaleDateString("en-GB",{month:"long",year:"numeric"})}, ...p]);
+    const date = new Date().toLocaleDateString("en-GB",{month:"long",year:"numeric"});
+    const { error } = await supabase.from("reviews").insert({
+      name: rvForm.name, book: rvForm.book, stars: rvForm.stars, text: rvForm.text, date,
+    });
+    if (error) return showToast("Error saving review. Please try again.");
     setRvForm({name:"",email:"",book:"",stars:5,text:""});
     showToast("Thank you for your feedback! 💛");
+    loadAll();
   };
 
   /* ── ADMIN ── */
@@ -446,24 +517,34 @@ export default function She0pe() {
   };
 
   /* save book */
-  const saveBook = () => {
+  const saveBook = async () => {
     const {title,genre,digitalPrice,excerpt} = bForm;
     if (!title||!genre||!digitalPrice||!excerpt) return showToast("Please fill: title, genre, digital price, excerpt.");
-    const cc = [bForm.coverColor, bForm.coverColor+"99"];
+    const cc = JSON.stringify([bForm.coverColor, bForm.coverColor+"99"]);
+    const payload = {
+      title, author: bForm.author, genre, year: bForm.year, pages: bForm.pages,
+      digital_price: Number(bForm.digitalPrice), physical_price: Number(bForm.physicalPrice)||0,
+      cover_color: cc, cover_img: bForm.coverImg||null, excerpt, about: bForm.about,
+    };
     if (editingBook) {
-      setBooks(p=>p.map(b=>b.id===bForm.id?{...bForm,digitalPrice:Number(bForm.digitalPrice),physicalPrice:Number(bForm.physicalPrice)||0,coverColor:cc}:b));
+      const { error } = await supabase.from("books").update(payload).eq("id", bForm.id);
+      if (error) return showToast("Error updating book.");
       showToast("Book updated! ✅");
     } else {
-      setBooks(p=>[...p,{...bForm,id:Date.now(),digitalPrice:Number(bForm.digitalPrice),physicalPrice:Number(bForm.physicalPrice)||0,coverColor:cc}]);
+      const { error } = await supabase.from("books").insert(payload);
+      if (error) return showToast("Error adding book.");
       showToast("Book added to shop! 📚");
     }
-    setBForm(BLANK_BOOK); setEditingBook(false);
+    setBForm(BLANK_BOOK); setEditingBook(false); loadAll();
   };
   const editBook = (b) => {
     setBForm({...b, coverColor:b.coverColor[0]||COVER_OPTS[0], digitalPrice:String(b.digitalPrice), physicalPrice:String(b.physicalPrice)});
     setEditingBook(true); setAdminTab("books"); window.scrollTo(0,0);
   };
-  const delBook = (id) => { setBooks(p=>p.filter(b=>b.id!==id)); showToast("Book removed."); };
+  const delBook = async (id) => {
+    await supabase.from("books").delete().eq("id", id);
+    showToast("Book removed."); loadAll();
+  };
 
   /* save event */
   const saveEvent = () => {
@@ -700,7 +781,7 @@ export default function She0pe() {
 
               {/* Tabs */}
               <div className="admin-tabs">
-                {[["books","📚 Books"],["events","📅 Events"],["accounts","💳 Accounts"]].map(([k,v])=>(
+                {[["books","📚 Books"],["events","📅 Events"],["accounts","💳 Accounts"],["orders","🧾 Orders"]].map(([k,v])=>(
                   <button key={k} className={`atab ${adminTab===k?"on":""}`} onClick={()=>setAdminTab(k)}>{v}</button>
                 ))}
               </div>
@@ -875,6 +956,48 @@ export default function She0pe() {
                   </div>
                   <button className="btn-gold" style={{width:"100%",padding:"0.8rem"}} onClick={saveAcct}>{editingAcct?"💾 Save Changes":"+ Add Account"}</button>
                 </div>}
+              </>}
+
+              {/* ── ORDERS TAB ── */}
+              {adminTab==="orders" && <>
+                <div className="admin-card">
+                  <h3>All Orders ({orders.length})</h3>
+                  <p className="hint">Every order placed through the website appears here in real time.</p>
+                  {orders.length===0 && <p style={{textAlign:"center",color:"#aaa",fontStyle:"italic",padding:"2rem"}}>No orders yet. They will appear here once customers start buying.</p>}
+                  {orders.map(o=>(
+                    <div key={o.id} style={{background:"var(--c)",borderRadius:"8px",padding:"1rem 1.2rem",marginBottom:"0.8rem",borderLeft:`4px solid ${o.status==="pending"?"var(--gold)":o.status==="confirmed"?"var(--moss)":"var(--terra)"}`}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:"0.5rem",marginBottom:"0.6rem"}}>
+                        <div>
+                          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",fontWeight:600,color:"var(--forest)"}}>{o.book_title}</div>
+                          <div style={{fontSize:"0.8rem",color:"#999"}}>{o.order_type==="digital"?"📱 Digital":"📦 Physical"} · Ref: <strong>{o.order_reference}</strong></div>
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:"0.5rem"}}>
+                          <span style={{background:o.status==="pending"?"rgba(196,145,58,0.15)":o.status==="confirmed"?"rgba(107,143,113,0.2)":"rgba(160,82,45,0.15)",color:o.status==="pending"?"var(--gold)":o.status==="confirmed"?"var(--moss)":"var(--terra)",fontSize:"0.75rem",padding:"0.2rem 0.6rem",borderRadius:"12px",textTransform:"uppercase",letterSpacing:"1px"}}>{o.status}</span>
+                          <select value={o.status} onChange={async(e)=>{await supabase.from("orders").update({status:e.target.value}).eq("id",o.id);loadAll();}} style={{fontSize:"0.78rem",padding:"0.2rem 0.4rem",border:"1px solid var(--cd)",borderRadius:"4px",background:"white",color:"var(--forest)"}}>
+                            <option value="pending">Pending</option>
+                            <option value="confirmed">Confirmed</option>
+                            <option value="shipped">Shipped</option>
+                            <option value="delivered">Delivered</option>
+                            <option value="cancelled">Cancelled</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0.3rem 1rem",fontSize:"0.85rem",color:"#555"}}>
+                        <div>👤 <strong>{o.customer_name}</strong></div>
+                        <div>✉️ {o.customer_email}</div>
+                        {o.customer_phone && <div>📞 {o.customer_phone}</div>}
+                        <div>💳 {o.payment_method}</div>
+                        {o.order_type==="physical" && <>
+                          <div style={{gridColumn:"1/-1"}}>📍 {o.delivery_address}, {o.delivery_city}, {o.delivery_state}, {o.delivery_country}</div>
+                          <div>🚚 Delivery: ₦{(o.delivery_fee||0).toLocaleString()}</div>
+                        </>}
+                        <div style={{gridColumn:"1/-1",marginTop:"0.3rem",fontFamily:"'Cormorant Garamond',serif",fontSize:"1rem",color:"var(--terra)",fontWeight:600}}>
+                          Total: ₦{(o.total_price||0).toLocaleString()} · {new Date(o.created_at).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </>}
 
               <div style={{textAlign:"center",marginTop:"2rem"}}>
